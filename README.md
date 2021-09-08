@@ -1,6 +1,6 @@
 # part-lifecycle
 
-This project investigates the part lifecycle of high-value, long lead-time parts such as vacuum-investment casted single-crystal superalloy components with additional preprocessing steps before being ready for use.
+This project investigates the part lifecycle of high-value, long lead-time parts such as vacuum-investment cast single-crystal superalloy components with additional preprocessing steps before being ready for use.
 
 ## Problem Statement
 
@@ -10,7 +10,7 @@ Various industries such as aerospace and certain sectors of power generation use
 
 ## Implementation
 
-The part lifecycle is simulated as a discrete event simulation implemented with [SimPy](https://simpy.readthedocs.io/en/latest/). As the problem is clearly nonconvex, the cost is optimized here using global methods such as basin hopping, particle swarm optimization, genetic algorithms, and so forth. The problem could also potentially be solved using mathematical optimization, which would bring the benefit of a more natural implementation of constraints and a lower bound on optimality via the dual problem but the scale of the problem at hand largely precludes this.
+The part lifecycle is simulated as a discrete event simulation implemented with [SimPy](https://simpy.readthedocs.io/en/latest/). As the problem is clearly nonconvex, the cost is optimized here using global methods such as basin hopping in (scipy)[https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.basinhopping.html#scipy.optimize.basinhopping] , and the methods provided by (Nevergrad)[https://facebookresearch.github.io/nevergrad/] such as particle swarm optimization, genetic algorithms, and so forth. The problem could also potentially be solved using mathematical optimization, which would bring the benefit of a more natural implementation of constraints and a lower bound on optimality via the dual problem but the scale of the problem at hand largely precludes this.
 
 ## Future Perspectives
 
