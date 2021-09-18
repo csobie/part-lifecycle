@@ -25,8 +25,8 @@ class Machine:
         mach_type (str): The number of times a part has gone through a machine.
         init_partset (PartSet): The initial PartSet generated during setup.
         init_time (int): The remaining time that the initial PartSet can be used.
-        pred_scrap_params (dict): Parameters describing actual scrap rate.
-        pred_scrap_params (dict): Parameters describing predicted scrap rate distribution.
+        act_scrap_dist (dict): Parameters describing actual scrap rate Beta distribution.
+        pred_scrap_params (dict): Parameters describing predicted scrap rate Beta distribution.
 
     Attributes:
         id (int): Machine ID, for debugging purposes only.
@@ -45,14 +45,16 @@ class Machine:
         part_inv_wait_time (int): stores the waiting interval if the warehouse does not have enough Parts.
         init_time (int): stores init_time arg.
         partset_change_date (int): simulation step number at which PartSet will be replaced.
-        act_scrap_params (dict): Parameters describing actual scrap rate Beta distribution.
-        pred_scrap_params (dict): Parameters describing predicted scrap rate Beta distribution.
+        act_scrap_dist (dict): Parameters describing actual scrap rate distribution.
+        pred_scrap_input (dict): Parameters describing predicted scrap rate distribution.
         act_scrap_rate (float): Scrap rate for current PartSet
-        pred_scrap_params (dict): Parameters describing predicted Beta distribution scrap rate for current PartSet.
+        pred_scrap_params (dict): Parameters describing predicted distribution scrap rate for current PartSet.
+        scrap_num_detr (int): Number of parts that will be scrapped deterministically, because they are at end of life.
+        partset_change_date (float): The time at which the current PartSet will be taken out of the Machine.
         
     '''
     id_iter = itertools.count()
-    def __init__(self, env, warehouse, repair_storage, part_run_dur, init_partset = None, init_time = None, act_scrap_params=None, pred_scrap_input=None):
+    def __init__(self, env, warehouse, repair_storage, part_run_dur, init_partset = None, init_time = None, act_scrap_dist=None, pred_scrap_input=None):
 
         self.mach_id = next(Machine.id_iter)
         self.env = env
@@ -70,12 +72,12 @@ class Machine:
         self.run_duration = part_run_dur # days
         self.part_inv_wait_time = 7 # days
         
-        self.act_scrap_params = act_scrap_params
+        self.act_scrap_dist = act_scrap_dist
         self.pred_scrap_input = pred_scrap_input
         
         self.act_scrap_rate = None
         self.pred_scrap_params = None
-        self.scrap_rate_detr = None
+        self.scrap_num_detr = None
         self.partset_change_date =  None
 
         # Start machine
@@ -89,7 +91,7 @@ class Machine:
             if self.init_time is not None:
                 # Run with the first parts
                 logging.debug('%s: Machine %s running with initial PartSet %s',self.env.now,self.mach_id,self.partset)
-                self.calc_scrap()
+                self.check_scrap()
                 self.partset_change_date = self.env.now + (self.run_duration-self.init_time)
                 yield self.env.timeout(self.run_duration-self.init_time)
 
@@ -112,7 +114,7 @@ class Machine:
             logging.debug('%s: Machine %s getting PartSet %s',self.env.now,self.mach_id,self.partset)
                                                            
             # Set class variables related to scrap rate prediction and time.
-            self.calc_scrap()
+            self.check_scrap()
             self.partset_change_date = self.env.now + self.run_duration
             # Run the machine
             yield self.env.timeout(self.run_duration)
@@ -123,8 +125,53 @@ class Machine:
             logging.debug('%s: Machine %s sending PartSet %s to repair',self.env.now,self.mach_id,self.partset)
 
             self.partset = None
-   
-    def calc_scrap(self):
+            
+    def set_scrap_params(self):
+        '''
+        
+
+        Args:
+            None
+
+        Returns:
+            None
+        '''
+        
+        # Set scrap parameters of PartSet depending variables passed
+        if isinstance(self.act_scrap_dist, dict):
+            if 'const' in self.act_scrap_dist.keys():
+                self.act_scrap_rate = self.act_scrap_dist['const']
+
+            elif all (x in self.act_scrap_dist for x in ("a","b")):
+                self.act_scrap_rate = scipy.stats.beta.rvs(self.act_scrap_dist['a'], self.act_scrap_dist['b'])
+            else:
+                raise ValueError(f'act_scrap_rate does not contain valid keys: {self.act_scrap_rate.keys()}')
+        else:
+            self.act_scrap_rate = None                                           
+        if isinstance(self.pred_scrap_input, dict):
+            # If std dev is passed to parameterize the predicted distribution,
+            # generate a dist based on the drawn actual mean.
+            if 'const' in self.pred_scrap_input:
+                self.pred_scrap_params['const'] = self.pred_scrap_input['const']
+            elif 's' in self.pred_scrap_input:
+                m = scipy.stats.uniform.rvs()*0.9+0.1
+                n = m*(1-m)/self.pred_scrap_input['s']
+
+                a = m*n
+                b = (1-m)*n
+
+                self.act_scrap_rate = m                                   
+                self.pred_scrap_params = {'a':a,'b':b}
+            # 
+            elif all (x in self.pred_scrap_input for x in ("a","b")):
+                self.pred_scrap_params = {'a':self.pred_scrap_input['a'],'b':self.pred_scrap_input['b']}
+            else:
+                raise ValueError(f'pred_scrap_input does not contain set of valid keys: {self.pred_scrap_input.keys()}')                        
+        else: 
+            self.pred_scrap_params = None
+            
+            
+    def check_scrap(self):
         '''
         Evaluates the PartSet's scrap rate. Called at the start of one run through a Machine, because
         the predicted scrap rate is used for planning orders. Sets the to_scrap boolean flag in each 
@@ -140,70 +187,20 @@ class Machine:
         
         # Update relevant scrap parameters in case anything changed
         self.set_scrap_params()
-        self.calc_scrap_detr()
+        self.check_scrap_detr()
         
         # Set subset of parts to be scrapped if act_scrap_rate is non-None
         if self.act_scrap_rate is not None:
-            scrapped_parts = int(self.act_scrap_rate*len(self.partset.parts))
-            to_scrap =  random.sample(self.partset.parts, scrapped_parts)
+            n_scrapped_parts = int(self.act_scrap_rate*len(self.partset.parts))
+            to_scrap =  random.sample(self.partset.parts, n_scrapped_parts)
             for part in to_scrap:
                 part.to_scrap = True
-                
-    def set_scrap_params(self):
-        '''
-        Sets the actual scrap rate given the input parameters at initialization. This function helps modify the
-        scrap rate on a per-set basis, can be modified over time by changing the parameters, and makes performing
-        the selected studies easier.
 
-        Args:
-            None
 
-        Returns:
-            None
-        '''
-            
-        # Set scrap parameters of PartSet depending variables passed
-        if isinstance(self.act_scrap_params, dict):
-            if 'const' in self.act_scrap_params.keys():
-                self.act_scrap_rate = self.act_scrap_params['const']
-            elif 'a' in self.act_scrap_params.keys() and 'b' in self.act_scrap_params.keys():
-                self.act_scrap_rate = scipy.stats.beta.rvs(self.act_scrap_params['a'], self.act_scrap_params['b'])
-            else:
-                raise ValueError(f'act_scrap_rate does not contain valid keys: {self.act_scrap_rate.keys()}')
-        else:
-            self.act_scrap_rate = None
-        logging.debug('%s: Machine %s set actual scrap rate %s for PartSet %s',
-                      self.env.now,self.mach_id,self.act_scrap_rate,self.partset)
-            
-        if isinstance(self.pred_scrap_input, dict):
-            # If std dev is passed to parameterize the predicted distribution,
-            # generate a dist based on the drawn actual mean.
-            if 'const' in self.pred_scrap_input.keys():
-                self.pred_scrap_params['const'] = self.pred_scrap_input['const']
-            elif 's' in self.pred_scrap_input.keys():
-                m = scipy.stats.uniform.rvs()*0.9+0.1
-                n = m*(1-m)/self.pred_scrap_input['s']
-
-                a = m*n
-                b = (1-m)*n
-
-                self.act_scrap_rate = m                                   
-                self.pred_scrap_params = {'a':a,'b':b}
-            # 
-            elif 'a' in self.pred_scrap_input.keys() and 'b' in self.pred_scrap_input.keys():
-                self.pred_scrap_params = {'a':self.pred_scrap_input['a'],'b':self.pred_scrap_input['b']}
-            else:
-                raise ValueError(f'pred_scrap_params does not contain set of valid keys: {self.pred_scrap_params.keys()}')                        
-        else: 
-            self.pred_scrap_params = None
-        logging.debug('%s: Machine %s set pred scrap params %s for PartSet %s',
-                      self.env.now,self.mach_id,self.pred_scrap_params,self.partset)
-
-                
-    def calc_scrap_detr(self):
+    def check_scrap_detr(self):
         '''
         Evaluates the PartSet's deterministic scrap rate. This is the number of Parts that are at
-        max_runs-1 of their lifetime limit before starting this machine's run.
+        max_runs-1 of their lifetime limit.
 
         Args:
             None
@@ -213,11 +210,11 @@ class Machine:
                 they have reached their maximum number of runs through a Machine.
         '''
         
-        scrap_rate_detr = 0
+        scrap_num_detr = 0
         for part in self.partset.parts:
             if part.n_runs == part.max_runs-1:
-                scrap_rate_detr += 1
-        self.scrap_rate_detr = scrap_rate_detr
+                scrap_num_detr += 1
+        self.scrap_num_detr = scrap_num_detr
                     
 
 class Factory:
@@ -366,9 +363,12 @@ class RepairShop:
                 logging.debug('%s: Repair checking part %s with %s runs',self.env.now,to_rep,to_rep.n_runs)
 
                 # Scrap the part if it has run its life
-                if to_rep.n_runs >= to_rep.max_runs or to_rep.to_scrap:
+                if to_rep.n_runs >= to_rep.max_runs:
                     yield self.scrap.put(to_rep)
-                    logging.debug('%s: Repair shop scrapped Part %s',self.env.now,to_rep)
+                    logging.debug('%s: Repair shop scrapped Part %s at EOL',self.env.now,to_rep)
+                elif to_rep.to_scrap:
+                    yield self.scrap.put(to_rep)
+                    logging.debug('%s: Repair shop scrapped Part %s from past run',self.env.now,to_rep)
 
                 # Otherwise repair it
                 else:
@@ -490,6 +490,8 @@ class PartSet:
     Attributes:
         id (int): PartSet ID, for debugging purposes only
         parts (list): Holds the Parts that compose the PartSet.
+        act_scrap_dist (dict): Parameters describing actual scrap rate Beta distribution.
+        pred_scrap_dist (dict): Parameters describing predicted scrap rate Beta distribution.
     '''
     id_iter = itertools.count()
     def __init__(self, parts):
@@ -509,7 +511,7 @@ class PartSet:
         '''
         for part in self.parts:
             part.n_runs += 1
-                     
+             
     def __repr__(self):
         return f"<PartSet {self.partset_id} containing: {[x.serial_num for x in self.parts]}>"
     
@@ -543,9 +545,7 @@ def setup(env, warehouse, preproc_storage, repair_storage, scrap, params):
         else:
             init_time = 0
 
-        machines.append(Machine(env, warehouse, repair_storage,params['part_run_dur'], 
-                                init_mach_partset, init_time,params['act_scrap_params'],params['pred_scrap_params']))
-        logging.debug('setup: Create Machine %s',machines[-1].mach_id)
+        machines.append(Machine(env, warehouse, repair_storage,params['part_run_dur'], init_mach_partset, init_time,params['act_scrap_params'],params['pred_scrap_params']))
         logging.debug('setup: send initial PartSet %s to Machine %s',init_mach_partset,machines[-1].mach_id)
 
     # Initialize spare parts for the warehouse    
