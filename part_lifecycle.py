@@ -52,7 +52,7 @@ class Machine:
         
     '''
     id_iter = itertools.count()
-    def __init__(self, env, warehouse, repair_storage, part_run_dur, init_partset = None, init_time = None, act_scrap_params=None, pred_scrap_params=None):
+    def __init__(self, env, warehouse, repair_storage, part_run_dur, init_partset = None, init_time = None, act_scrap_params=None, pred_scrap_input=None):
 
         self.mach_id = next(Machine.id_iter)
         self.env = env
@@ -71,9 +71,10 @@ class Machine:
         self.part_inv_wait_time = 7 # days
         
         self.act_scrap_params = act_scrap_params
-        self.pred_scrap_params = pred_scrap_params
+        self.pred_scrap_input = pred_scrap_input
         
         self.act_scrap_rate = None
+        self.pred_scrap_params = None
         self.scrap_rate_detr = None
         self.partset_change_date =  None
 
@@ -170,16 +171,18 @@ class Machine:
             else:
                 raise ValueError(f'act_scrap_rate does not contain valid keys: {self.act_scrap_rate.keys()}')
         else:
-            self.act_scrap_rate = None     
+            self.act_scrap_rate = None
+        logging.debug('%s: Machine %s set actual scrap rate %s for PartSet %s',
+                      self.env.now,self.mach_id,self.act_scrap_rate,self.partset)
             
-        if isinstance(self.pred_scrap_params, dict):
+        if isinstance(self.pred_scrap_input, dict):
             # If std dev is passed to parameterize the predicted distribution,
             # generate a dist based on the drawn actual mean.
-            if 'const' in self.act_scrap_params.keys():
-                self.pred_scrap_params['const'] = self.pred_scrap_params['const']
-            elif 's' in self.pred_scrap_params.keys():
+            if 'const' in self.pred_scrap_input.keys():
+                self.pred_scrap_params['const'] = self.pred_scrap_input['const']
+            elif 's' in self.pred_scrap_input.keys():
                 m = scipy.stats.uniform.rvs()*0.9+0.1
-                n = m*(1-m)/self.pred_scrap_params['s']
+                n = m*(1-m)/self.pred_scrap_input['s']
 
                 a = m*n
                 b = (1-m)*n
@@ -187,13 +190,16 @@ class Machine:
                 self.act_scrap_rate = m                                   
                 self.pred_scrap_params = {'a':a,'b':b}
             # 
-            elif 'a' in self.pred_scrap_params.keys() and 'b' in self.pred_scrap_params.keys():
-                self.pred_scrap_params = {'a':self.pred_scrap_params['a'],'b':self.pred_scrap_params['b']}
+            elif 'a' in self.pred_scrap_input.keys() and 'b' in self.pred_scrap_input.keys():
+                self.pred_scrap_params = {'a':self.pred_scrap_input['a'],'b':self.pred_scrap_input['b']}
             else:
                 raise ValueError(f'pred_scrap_params does not contain set of valid keys: {self.pred_scrap_params.keys()}')                        
         else: 
             self.pred_scrap_params = None
+        logging.debug('%s: Machine %s set pred scrap params %s for PartSet %s',
+                      self.env.now,self.mach_id,self.pred_scrap_params,self.partset)
 
+                
     def calc_scrap_detr(self):
         '''
         Evaluates the PartSet's deterministic scrap rate. This is the number of Parts that are at
@@ -537,7 +543,9 @@ def setup(env, warehouse, preproc_storage, repair_storage, scrap, params):
         else:
             init_time = 0
 
-        machines.append(Machine(env, warehouse, repair_storage,params['part_run_dur'], init_mach_partset, init_time))
+        machines.append(Machine(env, warehouse, repair_storage,params['part_run_dur'], 
+                                init_mach_partset, init_time,params['act_scrap_params'],params['pred_scrap_params']))
+        logging.debug('setup: Create Machine %s',machines[-1].mach_id)
         logging.debug('setup: send initial PartSet %s to Machine %s',init_mach_partset,machines[-1].mach_id)
 
     # Initialize spare parts for the warehouse    
