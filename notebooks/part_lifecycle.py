@@ -152,7 +152,7 @@ class Machine:
             # If std dev is passed to parameterize the predicted distribution,
             # generate a dist based on the drawn actual mean.
             if 'const' in self.pred_scrap_input:
-                self.pred_scrap_params['const'] = self.pred_scrap_input['const']
+                self.pred_scrap_params = self.pred_scrap_input
             elif 's' in self.pred_scrap_input:
                 m = scipy.stats.uniform.rvs()*0.9+0.1
                 n = m*(1-m)/self.pred_scrap_input['s']
@@ -515,66 +515,3 @@ class PartSet:
     def __repr__(self):
         return f"<PartSet {self.partset_id} containing: {[x.serial_num for x in self.parts]}>"
     
-    
-def setup(env, warehouse, preproc_storage, repair_storage, scrap, params):
-    '''
-    Setup classes for simulation. Required to populate machines with parts and track them, and
-    adjust the Factory so that the unique identifiers are created accordingly.
-
-    Args:
-        env (simpy.Environment): The environment in which the simulation is run.
-        warehouse (simpy.Store): The warehouse storing all Parts ready for use.
-        preproc_storage (simpy.Store): The warehouse storing all Parts that need to be preprocessed to be made ready for use.
-        repair_storage (simpy.Store): The warehouse storing all Parts awaiting repairs.
-        scrap (simpy.Store): The warehouse storing all scrapped Parts.
-        params (dict): parameters to specific the simulation initialization.
-
-    Returns:
-        machines (list): list of Machines initialized with list of Parts init_parts.
-        factory (Factory): Factory initialized with correct starting Part count.
-    '''
-    rng = np.random.default_rng()
-
-    # Initialize parts and then place them into a Machine
-    machines = []
-    for i in range(params['n_machine']):
-        init_mach_partset = PartSet([Part(params['part_n_runs_life']) for j in range(params['n_parts_per_mach'])])
-
-        if params['rand_start']:
-            init_time = rng.integers(1,params['part_run_dur']+1) # Generate uniformly distributed start time for the parts in the machine
-        else:
-            init_time = 0
-
-        machines.append(Machine(env, warehouse, repair_storage,params['part_run_dur'], init_mach_partset, init_time,params['act_scrap_params'],params['pred_scrap_params']))
-        logging.debug('setup: send initial PartSet %s to Machine %s',init_mach_partset,machines[-1].mach_id)
-
-    # Initialize spare parts for the warehouse    
-    init_ware_partsets = []
-    for i in range(params['n_partsets_warehouse']):
-        init_ware_partsets.append(PartSet([Part(params['part_n_runs_life']) for i in range(params['n_parts_per_mach'])]))
-        logging.debug(f'setup: create initial PartSet {init_ware_partsets[-1]} for warehouse')
-
-    # Add them to the warehouse
-    warehouse.items = init_ware_partsets
-
-    # Create the factory, initialize the shops
-    factory = Factory(env, preproc_storage, params['fact_lead_time'], params['part_n_runs_life'], params['sim_length'])
-    prepro_shop = PreprocessShop(env, warehouse, preproc_storage, params['prepro_through'], params['n_parts_per_mach'])
-    rep_shop = RepairShop(env, preproc_storage, repair_storage, scrap, params['rep_through'])
-
-    return machines, factory
-
-
-def monitor_warehouse(env, warehouse, warehouse_data):
-    '''
-    Monitor the contents at the warehouse at every step in time. Used to
-    quantify the opportunity loss of the idle parts.
-
-    Args:
-        env (simpy.Environment): The environment in which the simulation is run.
-        warehouse (simpy.Store): The warehouse storing all Parts.
-        warehouse_data  (list): list to which warehouse contents information is appended.
-    '''
-    while True:
-        warehouse_data.append(len(warehouse.items))
-        yield env.timeout(1) # Check every step
