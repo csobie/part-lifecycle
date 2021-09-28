@@ -69,11 +69,15 @@ def monitor_warehouse(env, warehouse, warehouse_data):
         warehouse_data.append(len(warehouse.items))
         yield env.timeout(1) # Check every step
         
-def inventory_control(env, warehouse, factory, machines, params, inv_ctrl_method, opt_param_1, opt_param_2):
+def inventory_control(env, warehouse, factory, machines, params, inv_ctrl_method, **kwargs):
     
     if inv_ctrl_method == 'r_q':
-        r = opt_param_1
-        q = opt_param_2
+        try:
+            r = kwargs['r']
+            q = kwargs['q']
+        except KeyError as e:
+            print('kwargs r, q must be passed for inv_ctrl_method r_q')
+            raise e
         while True:
             # Consider the warehouse contents plus the number of parts arriving within one lead time.
             total_items = len(warehouse.items)*params['n_parts_per_mach'] + np.sum(factory.orders[env.now:env.now+params['fact_lead_time']])
@@ -84,8 +88,12 @@ def inventory_control(env, warehouse, factory, machines, params, inv_ctrl_method
     
     
     elif inv_ctrl_method == 's_s':
-        small_s = opt_param_1
-        big_s = opt_param_2
+        try:
+            small_s = kwargs['small_s']
+            big_s = kwargs['big_s']
+        except KeyError as e:
+            print('kwargs small_s, big_s must be passed for inv_ctrl_method s_s')
+            raise e
         while True:
             total_items = len(warehouse.items)*params['n_parts_per_mach'] + np.sum(factory.orders[env.now:env.now+params['fact_lead_time']])
             if total_items < small_s:
@@ -95,8 +103,13 @@ def inventory_control(env, warehouse, factory, machines, params, inv_ctrl_method
                 
     # Need to deal with mix between stochastic and deterministic scrappage here
     elif inv_ctrl_method == 'fcast':
-        days_lookahead = opt_param_1
-        target_level = opt_param_2
+
+        try:
+            days_lookahead = kwargs['days_lookahead']
+            target_level = kwargs['target_level']
+        except KeyError as e:
+            print('kwargs days_lookahead, target_level must be passed for inv_ctrl_method fcast')
+            raise e
         while True:
             # Calculate the number of availabile parts within one full lead time, minus the expected scrapped parts.
             expected_scrap = np.zeros(params['sim_length']+1000)
@@ -105,14 +118,19 @@ def inventory_control(env, warehouse, factory, machines, params, inv_ctrl_method
                 if 'const' in m.pred_scrap_params:
                     scrap_rate = m.pred_scrap_params['const']
                 elif all (x in m.pred_scrap_params for x in ("a","b")):
+                    try:
+                        scrap_rate_ppf = kwargs['scrap_rate_ppf']
+                    except KeyError as e:
+                        print('kwargs scrap_rate_ppf must be passed inv_ctrl_method fcast and pred_scrap_params (a,b)')
+                        raise e
                     # Get nth percentile of dist
-                    scrap_rate = scipy.stats.beta.ppf(params['scrap_rate_ppf'],m.pred_scrap_params['a'], m.pred_scrap_params['b'])
+                    scrap_rate = scipy.stats.beta.ppf(scrap_rate_ppf,m.pred_scrap_params['a'], m.pred_scrap_params['b'])
                 else:
                     raise ValueError(f'Machine {m} does not have required pred_scrap_params keys ("const" or ["a","b"]): {m.pred_scrap_params}')
                 expected_scrap[m.partset_change_date] += params['n_parts_per_mach']*scrap_rate+(1-scrap_rate)*m.scrap_num_detr
 
             # Subtract the expected scrap during one lead time from the effective warehoused quantity (on-hand parts + ordered parts)
-            n_scrap_pred = int(sum([expected_scrap[env.now:env.now+params['fact_lead_time']]]))
+            n_scrap_pred = int(sum(expected_scrap[env.now:env.now+int(params['fact_lead_time']*1.25)]))
             total_items = len(warehouse.items)*params['n_parts_per_mach'] + np.sum(factory.orders[env.now:env.now+params['fact_lead_time']])-n_scrap_pred
             if total_items < target_level:
                 logging.debug(f'{env.now}: Inventory control requesting parts from factory, warehouse has {len(warehouse.items)} PartSets')
@@ -122,7 +140,7 @@ def inventory_control(env, warehouse, factory, machines, params, inv_ctrl_method
         raise ValueError(f'Invalid control type passed to inventory_control: {inv_ctrl_method}')
     yield
 
-def run_sim(inv_ctrl,act_scrap_params,pred_scrap_params,q_init,inv_opt_p1,inv_opt_p2,prepro_through,rep_through):
+def run_sim(inv_ctrl,act_scrap_params,pred_scrap_params,**kwargs):
 
     env = simpy.Environment()
     warehouse = simpy.Store(env, capacity=10000)
@@ -139,12 +157,12 @@ def run_sim(inv_ctrl,act_scrap_params,pred_scrap_params,q_init,inv_opt_p1,inv_op
     params = {'sim_length':sim_days,
           'fact_lead_time':180,
           'part_n_runs_life':2,
-          'part_run_dur':250,
-          'prepro_through':prepro_through,
-          'rep_through':rep_through,
+          'part_run_dur':300,
+          'prepro_through':kwargs['prepro_through'],
+          'rep_through':kwargs['rep_through'],
           'n_parts_per_mach':75,
-          'n_partsets_warehouse':q_init,
-          'n_machine':100,
+          'n_partsets_warehouse':kwargs['q_init'],
+          'n_machine':75,
           'rand_start':True,
           'leadtime_func':leadtime_func,
           'act_scrap_params':act_scrap_params,
@@ -161,7 +179,7 @@ def run_sim(inv_ctrl,act_scrap_params,pred_scrap_params,q_init,inv_opt_p1,inv_op
 
     machines, factory = setup(env, warehouse, preproc_storage, repair_storage, scrap, params)
     # Start inventory management process
-    env.process(inventory_control(env, warehouse, factory, machines, params,inv_ctrl,  inv_opt_p1, inv_opt_p2))
+    env.process(inventory_control(env, warehouse, factory, machines, params,inv_ctrl, **kwargs))
 
     env.run(until=sim_days)
 

@@ -16,7 +16,19 @@ This analysis touches on the following topics:
 
 ## Part Lifecycle
 
+The figure below shows flow of parts and information through the system. Black lines show the movement of Parts or Partsets, as per the line labels, and red lines denote information. Square boxes represent things that act on Parts or Partsets, and ellipses are storage facilities.
+
 ![Part Lifecycle Diagram](./data/img/Part_replacement_flow.png)
+
+The flow of parts is relatively simple:
+
+- The Factory produces new Parts as requested from the Replacement Prediction
+- New Parts are put into the preprocessing backlog, along with repaired Parts.
+- Parts are preprocessed and combined into PartSets. The rate at which is can be done is an optimization variable.
+- Complete PartSets go to the warehouse before they go into a Machine.
+- A Machine runs for a known time, and the used PartSet is sent to the repair backlog.
+- The repair shop splits PartSets, scraps Parts according to a scrap rate and how many times they've been through a Machine. The repair shop throughput is an optimization variable.
+- The replacement prediction is an inventory management scheme
 
 ## Implementation
 
